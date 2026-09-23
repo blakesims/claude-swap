@@ -15,6 +15,7 @@ from rich.text import Text
 from textual.widgets import ListItem, Static
 
 from claude_swap import pace
+from claude_swap.codex_usage import CodexUsage
 from claude_swap.json_output import USAGE_API_KEY
 from claude_swap.models import AccountSnapshot
 from claude_swap.switcher import ERROR_NOTES
@@ -304,6 +305,44 @@ def mini_account_text(
     if not parts:
         text.append("usage unknown", style=palette.muted)
     return text
+
+
+class CodexPanel(Static):
+    """Read-only Codex limits below Claude accounts on the watch screen."""
+
+    def on_mount(self) -> None:
+        self.watch(self.app, "codex_usage", lambda _usage: self.refresh(layout=True))
+        self.watch(self.app, "theme", lambda _theme: self.refresh(layout=True))
+        self.set_interval(30, self.refresh)  # reset countdown advances without a fetch
+
+    def render(self) -> Text:
+        app: "CswapApp" = self.app  # type: ignore[assignment]
+        palette = Palette.from_theme(app.current_theme)
+        usage: CodexUsage = app.codex_usage
+        now = time.time()
+        text = Text()
+        text.append("OpenAI Codex", style=f"bold {palette.accent}")
+        if usage.plan:
+            text.append(f"  [{usage.plan}]", style=palette.muted)
+        if usage.status:
+            text.append(f"\n    {usage.status}", style=palette.muted)
+        if not usage.windows:
+            return text
+        width = (self.size.width or 80) - 2
+        label_width = max(len(w.label) for w in usage.windows)
+        bar_width = max(12, min(30, width - 42 - label_width))
+        row_overhead = 4 + label_width + 1 + bar_width + 5 + 2
+        stale = usage.fetched_at is not None and now - usage.fetched_at > 120
+        for window in usage.windows:
+            suffix, suffix_full = _reset_parts({"resets_at": window.resets_at}, now)
+            if suffix_full and row_overhead + len(suffix_full) <= width:
+                suffix = suffix_full
+            text.append("\n    ")
+            text.append(usage_bar(
+                f"{window.label:<{label_width}}", window.pct, suffix,
+                bar_width, stale=stale, palette=palette,
+            ))
+        return text
 
 
 class AccountsPanel(Static):

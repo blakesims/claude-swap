@@ -1096,6 +1096,15 @@ class TestDashboard:
 
 @pytest.mark.asyncio
 class TestWatchScreen:
+    @pytest.fixture(autouse=True)
+    def mock_codex(self, monkeypatch):
+        from claude_swap.codex_usage import CodexUsage, CodexWindow
+
+        monkeypatch.setattr(
+            "claude_swap.tui.app.fetch_codex_usage",
+            lambda: CodexUsage((CodexWindow("5h", 42, _iso_in(7200)),)),
+        )
+
     def _fake(self, tmp_path):
         return FakeSwitcher(
             [make_account(1, active=True), make_account(2)], tmp_path
@@ -1116,9 +1125,31 @@ class TestWatchScreen:
             listview = app.screen.query_one("#accounts", ListView)
             assert len(list(listview.query(AccountItem))) == 2  # full cards
             assert listview.index is None  # monitor mode: no cursor
+            from claude_swap.tui.widgets import CodexPanel
+
+            assert "OpenAI Codex" in app.screen.query_one(CodexPanel).render().plain
+            assert "5h" in app.screen.query_one(CodexPanel).render().plain
             await pilot.press("enter")  # inert while just watching
             await settle(pilot)
             assert not any(call[0] == "switch_to" for call in fake_calls(app))
+
+    async def test_codex_updates_without_switching_accounts(self, tmp_path):
+        from claude_swap.codex_usage import CodexUsage, CodexWindow
+        from claude_swap.tui.widgets import CodexPanel
+
+        fake = self._fake(tmp_path)
+        app = make_app(fake)
+        async with app.run_test(size=(100, 40)) as pilot:
+            await settle(pilot)
+            await pilot.press("w")
+            await settle(pilot)
+            panel = app.screen.query_one(CodexPanel)
+            assert "resets" in panel.render().plain
+            assert "5h" in panel.render().plain
+            app._apply_codex_usage(CodexUsage(status="usage unavailable · run codex login"))
+            await pilot.pause()
+            assert "codex login" in panel.render().plain
+            assert not any(call[0] == "switch_to" for call in fake.calls)
 
     async def test_s_arms_selection_switch_stays_watching(self, tmp_path):
         fake = self._fake(tmp_path)

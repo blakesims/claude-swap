@@ -164,7 +164,7 @@ Subfolders inherit the nearest mapped ancestor. In an unmapped directory, `cswap
 
 ### Interactive dashboard (TUI)
 
-Run `cswap` on its own (or `cswap tui`) for the full-screen dashboard: live usage for every account, switching, and the auto-switcher, all keyboard-driven. `cswap watch` opens it straight to the live monitor. Works on macOS, Linux, and Windows.
+Run `cswap` on its own (or `cswap tui`) for the full-screen dashboard: live usage for every account, switching, and the auto-switcher, all keyboard-driven. `cswap watch` opens it straight to the live monitor. The watch view also shows the current OpenAI Codex login's usage and reset times in a separate read-only section when the Codex CLI is installed. It refreshes every minute via `codex app-server`, without reading Codex credentials or switching Codex accounts; if usage is unavailable, it suggests `codex login`. Works on macOS, Linux, and Windows.
 
 <img src="assets/tui-watch.png" width="760" alt="cswap watch — live 5h/7d usage bars for every account, with reset times and the active account marked">
 

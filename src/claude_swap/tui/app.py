@@ -18,6 +18,7 @@ from textual.reactive import reactive
 from textual.worker import WorkerState
 
 from claude_swap import printer
+from claude_swap.codex_usage import CodexUsage, fetch_codex_usage
 from claude_swap.models import AccountsSnapshot
 from claude_swap.snapshot_source import account_identity
 from claude_swap.settings import load_settings, load_ui_settings, set_setting
@@ -49,6 +50,7 @@ class CswapApp(App):
     snapshot: reactive[AccountsSnapshot | None] = reactive(None)
     refresh_status: reactive[str] = reactive("")
     busy: reactive[bool] = reactive(False)
+    codex_usage: reactive[CodexUsage] = reactive(CodexUsage(status="loading…"))
 
     def __init__(
         self,
@@ -70,6 +72,7 @@ class CswapApp(App):
         self._refresh_generation = 0
         self._applied_generation = 0
         self._last_refresh_error = ""
+        self._codex_refreshing = False
         # The auto-switch threshold, drawn as a tick on the status strip's
         # bars everywhere. Missing/invalid settings fall back to the default.
         try:
@@ -203,6 +206,24 @@ class CswapApp(App):
                 parts.append(f"refreshing {format_duration(elapsed)}")
         self.refresh_status = " · ".join(parts)
 
+    def refresh_codex(self) -> None:
+        """Watch view only: one Codex request at a time, independent of Claude."""
+        if self._codex_refreshing:
+            return
+        self._codex_refreshing = True
+        self.run_worker(
+            self._fetch_codex_blocking, thread=True, group="codex",
+            exit_on_error=False, name="codex-usage",
+        )
+
+    def _fetch_codex_blocking(self) -> None:
+        usage = fetch_codex_usage()
+        self.call_from_thread(self._apply_codex_usage, usage)
+
+    def _apply_codex_usage(self, usage: CodexUsage) -> None:
+        self._codex_refreshing = False
+        self.codex_usage = usage
+
     def request_refresh(self, *, full: bool = False) -> None:
         if full:
             self._full_next = True
@@ -230,6 +251,9 @@ class CswapApp(App):
                 self.notify(
                     f"{lane.capitalize()} failed: {msg}", severity="warning", timeout=6
                 )
+        elif event.worker.group == "codex":
+            self._codex_refreshing = False
+            self.codex_usage = CodexUsage(status="Codex usage unavailable")
         elif event.worker.group == "action":
             self.busy = False
             self.notify(f"Action failed: {event.worker.error}", severity="error")
@@ -392,6 +416,8 @@ class CswapApp(App):
 
     def action_refresh_full(self) -> None:
         self.request_refresh(full=True)
+        if isinstance(self.screen, WatchScreen):
+            self.refresh_codex()
         self.notify("Refreshing usage…", timeout=2)
 
     def action_open_auto(self) -> None:

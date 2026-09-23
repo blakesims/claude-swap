@@ -26,7 +26,7 @@ from textual.screen import Screen
 from textual.widgets import Footer, ListView, Static
 
 from claude_swap.models import AccountsSnapshot
-from claude_swap.tui.widgets import AccountItem, AccountsPanel, MenuItem
+from claude_swap.tui.widgets import AccountItem, AccountsPanel, CodexPanel, MenuItem
 
 if TYPE_CHECKING:
     from claude_swap.tui.app import CswapApp
@@ -353,7 +353,15 @@ class WatchScreen(AccountListScreen):
         super().__init__()
         self._selecting = False
 
+    def compose(self) -> ComposeResult:
+        yield Static("", id="list-title")
+        yield ListView(id="accounts")
+        yield CodexPanel(id="codex-panel")
+        yield Footer()
+
     def on_mount(self) -> None:
+        self.app.refresh_codex()
+        self.set_interval(60, self.app.refresh_codex)
         self.watch(self.app, "refresh_status", self._on_refresh_status)
         self.query_one("#list-title", Static).update(self._title_text())
         super().on_mount()

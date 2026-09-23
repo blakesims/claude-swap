@@ -76,6 +76,17 @@ MenuItem Static.menu-item-muted { color: $secondary; }
     color: $secondary;
 }
 
+WatchScreen #accounts {
+    height: auto;
+    max-height: 70%;
+}
+
+#codex-panel {
+    height: auto;
+    padding: 1 4;
+    border-top: solid $panel;
+}
+
 /* -- auto screen ---------------------------------------------------------- */
 
 #auto-top {
