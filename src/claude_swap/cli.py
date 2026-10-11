@@ -988,7 +988,7 @@ def _credits_command(argv: list[str]) -> None:
     parser = argparse.ArgumentParser(
         prog=f"{_prog_name()} credits",
         description="Local API credit estimates, not verified billing balances.",
-        epilog="No automatic billing reset. Use set --since DATE to start a new tracking period.",
+        epilog="Use set --monthly-cycle to estimate monthly renewals from the claim date supplied with --since.",
     )
     parser.add_argument("--json", action="store_true")
     sub = parser.add_subparsers(dest="command")
@@ -996,7 +996,8 @@ def _credits_command(argv: list[str]) -> None:
     configure.add_argument("account")
     configure.add_argument("--group-with", required=True, metavar="ACCOUNT")
     configure.add_argument("--monthly-credit", required=True, type=float, metavar="USD")
-    configure.add_argument("--since", help="ISO date/time to count from (default: account added)")
+    configure.add_argument("--since", help="ISO claim date/time to count from (default: account added)")
+    configure.add_argument("--monthly-cycle", action="store_true", help="assume monthly credit renewal from the claim date")
     remove = sub.add_parser("unset", help="stop observing an account, leaving it managed")
     remove.add_argument("account")
     args = parser.parse_args(argv)
@@ -1030,18 +1031,31 @@ def _credits_command(argv: list[str]) -> None:
                         "group_identity": identity(parent),
                         "monthly_credit": args.monthly_credit,
                         "since": since,
+                        "monthly_cycle": args.monthly_cycle,
                     }
                 switcher._write_json(switcher.backup_dir / CONFIG_NAME, config)
             print(f"Credit display {'configured' if args.command == 'set' else 'removed'} for account {number}. Switching unchanged.")
             return
         estimates = CreditMonitor(switcher.backup_dir).scan(snap, now=time.time())
         if args.json:
-            print(json.dumps({n: {**asdict(e), "remaining": e.remaining, "exhausted": e.exhausted}
+            print(json.dumps({n: {**asdict(e), "pct": e.pct, "remaining": e.remaining, "exhausted": e.exhausted}
                               for n, e in estimates.items()}, indent=2))
         else:
-            from claude_swap.tui.widgets import credit_card_text
+            from rich.console import Console
+            from claude_swap.tui.theme import CSWAP_DARK, CSWAP_LIGHT, Palette
+            from claude_swap.tui.widgets import credit_card_text, usage_rows
+
+            console = Console(color_system="auto" if printer.colors_enabled() else None)
+            palette = Palette.from_theme(CSWAP_LIGHT if printer._theme == "light" else CSWAP_DARK)
+            accounts = {a.number: a for a in snap.accounts}
             for estimate in estimates.values():
-                print(credit_card_text(estimate, now=time.time()).plain)
+                parent = accounts[estimate.group_with]
+                rows = usage_rows(parent.usage.last_good, snap.taken_at, parent.usage.fetched_at)
+                label_width = max([len("API"), *(len(row[0]) for row in rows)])
+                console.print(credit_card_text(
+                    estimate, now=time.time(), width=console.width,
+                    label_width=label_width, palette=palette,
+                ))
             if not estimates:
                 print("No API credit estimates configured. Run cswap credits set --help.")
     except (ClaudeSwitchError, OSError, ValueError, KeyError, TypeError) as exc:

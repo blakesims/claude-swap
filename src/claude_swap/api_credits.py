@@ -2,11 +2,13 @@
 
 Separate display metadata deliberately leaves account identities, credential kinds
 and rotation untouched. An allowance is an assumed starting balance, not a billing
-measurement. Tracking starts explicitly, never resets on a guessed billing date.
+measurement. Optional monthly periods use the operator's claim date, not inferred
+billing metadata.
 """
 
 from __future__ import annotations
 
+import calendar
 import json
 import math
 import os
@@ -38,6 +40,22 @@ def timestamp(value: str) -> float:
     return dt.timestamp()
 
 
+def monthly_window(since: str, now: float) -> tuple[str, str]:
+    """Calendar months from a supplied claim date, retaining month-end anchors."""
+    anchor = datetime.fromtimestamp(timestamp(since), tz=timezone.utc)
+    current = datetime.fromtimestamp(now, tz=timezone.utc)
+    elapsed = max(0, (current.year - anchor.year) * 12 + current.month - anchor.month)
+
+    def boundary(months: int) -> datetime:
+        year, month = divmod(anchor.year * 12 + anchor.month - 1 + months, 12)
+        month += 1
+        return anchor.replace(year=year, month=month, day=min(anchor.day, calendar.monthrange(year, month)[1]))
+
+    if elapsed and boundary(elapsed) > current:
+        elapsed -= 1
+    return boundary(elapsed).isoformat(), boundary(elapsed + 1).isoformat()
+
+
 def identity(account: AccountSnapshot) -> list[str]:
     return [account.email, account.org_uuid]
 
@@ -56,6 +74,11 @@ class CreditEstimate:
     incomplete: bool = False
     source_identity: tuple[str, str] = ("", "")
     group_org_uuid: str = ""
+    resets_at: str | None = None
+
+    @property
+    def pct(self) -> float | None:
+        return None if self.incomplete else min(100.0, max(0.0, self.spent / self.monthly_credit * 100))
 
     @property
     def remaining(self) -> float | None:
@@ -82,6 +105,8 @@ def load_credit_accounts(root: Path) -> dict:
         if not isinstance(amount, (int, float)) or not math.isfinite(amount) or amount <= 0:
             raise ValueError(f"invalid monthly credit for account {number}")
         timestamp(entry["since"])
+        if not isinstance(entry.get("monthly_cycle", False), bool):
+            raise ValueError(f"invalid monthly cycle for account {number}")
         if not isinstance(entry.get("source_identity"), list) or not entry.get("group_with"):
             raise ValueError(f"missing account identity for account {number}")
     return data
@@ -219,7 +244,10 @@ class CreditMonitor:
                 continue
             if identity(parent) != entry.get("group_identity"):
                 continue
-            since = timestamp(entry["since"])
+            period_start, resets_at = entry["since"], None
+            if entry.get("monthly_cycle"):
+                period_start, resets_at = monthly_window(period_start, now)
+            since = timestamp(period_start)
             requests = {}
             error_at = None
             incomplete = False
@@ -259,9 +287,9 @@ class CreditMonitor:
                     spent += cost
                 last_used = max(last_used or at, at)
             estimates[number] = CreditEstimate(
-                number, parent.number, parent.email, entry["monthly_credit"], entry["since"],
+                number, parent.number, parent.email, entry["monthly_credit"], period_start,
                 spent, len(requests), last_used, error_at, incomplete,
-                source_identity=tuple(identity(acc)), group_org_uuid=parent.org_uuid,
+                source_identity=tuple(identity(acc)), group_org_uuid=parent.org_uuid, resets_at=resets_at,
             )
         self.logs = {p: log for p, log in self.logs.items() if p in live_paths}
         return estimates

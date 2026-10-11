@@ -1143,7 +1143,8 @@ class TestWatchScreen:
         estimates = {
             str(api): CreditEstimate(str(api), str(parent), accounts[parent - 1].email,
                                      200, "2026-10-11", spent=20, requests=5, last_used=1000,
-                                     source_identity=(next(a.email for a in accounts if a.number == str(api)), ""))
+                                     source_identity=(next(a.email for a in accounts if a.number == str(api)), ""),
+                                     resets_at="2026-11-11T09:00:00Z")
             for parent, api in [(1, 6), (2, 7), (3, 8)]
         }
         monkeypatch.setattr("claude_swap.tui.app.CreditMonitor.scan", lambda *_args, **_kwargs: estimates)
@@ -1158,7 +1159,12 @@ class TestWatchScreen:
             card = next(item for item in items if item.number == target).query_one(AccountCard).render().plain
             assert "~$180.00 left" in card and "$200.00/mo" in card
             assert "http-400" not in card
-            assert "monthly renewals are not tracked" in app.screen.query_one("#credit-note").render().plain
+            assert "configured claim date" in app.screen.query_one("#credit-note").render().plain
+            parent_number = estimates[target].group_with
+            parent_card = next(item for item in items if item.number == parent_number).query_one(AccountCard).render().plain
+            parent_bar, api_bar = parent_card.splitlines()[1], card.splitlines()[1]
+            assert parent_bar.index("━") == api_bar.index("━")
+            assert parent_bar.index("%") == api_bar.index("%")
             await pilot.press("s")
             listview = app.screen.query_one("#accounts", ListView)
             assert listview.index == 4  # active subscription 3 after grouping

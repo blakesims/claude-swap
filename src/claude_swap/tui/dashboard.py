@@ -27,7 +27,7 @@ from textual.widgets import Footer, ListView, Static
 
 from claude_swap.api_credits import grouped_accounts, valid_estimates
 from claude_swap.models import AccountsSnapshot
-from claude_swap.tui.widgets import AccountCard, AccountItem, AccountsPanel, CodexPanel, MenuItem
+from claude_swap.tui.widgets import AccountCard, AccountItem, AccountsPanel, CodexPanel, MenuItem, usage_rows
 
 if TYPE_CHECKING:
     from claude_swap.tui.app import CswapApp
@@ -379,7 +379,7 @@ class WatchScreen(AccountListScreen):
     def _credit_note(self, _status: str = "") -> None:
         note = self.query_one("#credit-note", Static)
         text = self.app.credit_status or (
-            "API amounts estimate local use since shown dates. Other usage and monthly renewals are not tracked."
+            "API bars estimate local spending. Reset dates use the configured claim date, not verified billing."
             if self.app.credit_estimates else ""
         )
         note.update(text)
@@ -398,8 +398,17 @@ class WatchScreen(AccountListScreen):
         if self._selecting and selected in self._numbers:
             listview.index = self._numbers.index(selected)
         parents = {e.group_with for e in estimates.values()}
+        accounts = {acc.number: acc for acc in snap.accounts}
+        label_widths = {}
+        for number, estimate in estimates.items():
+            parent = accounts[estimate.group_with]
+            rows = usage_rows(parent.usage.last_good, snap.taken_at, parent.usage.fetched_at)
+            label_width = max([len("API"), *(len(row[0]) for row in rows)])
+            label_widths[number] = label_widths[parent.number] = label_width
         for item in listview.query(AccountItem):
-            item.query_one(AccountCard).set_credit(estimates.get(item.number))
+            item.query_one(AccountCard).set_credit(
+                estimates.get(item.number), label_width=label_widths.get(item.number),
+            )
             item.set_class(item.number in parents, "credit-parent")
 
     def _active_index(self, snap: AccountsSnapshot) -> int:

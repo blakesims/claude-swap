@@ -6,7 +6,7 @@ import json
 import pytest
 
 from claude_swap.api_credits import (
-    CONFIG_NAME, CreditMonitor, grouped_accounts, request_cost, timestamp, valid_estimates,
+    CONFIG_NAME, CreditMonitor, grouped_accounts, monthly_window, request_cost, timestamp, valid_estimates,
 )
 from claude_swap.models import AccountSnapshot, AccountsSnapshot
 from claude_swap.session import session_dir_for
@@ -173,10 +173,60 @@ def test_display_labels_estimates_and_incomplete_or_exhausted_status(tmp_path):
     text = credit_card_text(estimate, now=NOW).plain
     assert "$200.00/mo" in text and "~$0.05 used" in text and "~$199.95 left" in text
     assert "owner@example.com" in text and "1 API requests" in text
-    assert "last used 30m ago" in text and "since 2026-10-11" in text
+    assert "last used 30m ago" in text and "reset unknown" in text
     assert "remaining unknown" in credit_card_text(dataclasses.replace(estimate, incomplete=True), now=NOW).plain
     assert "credit exhausted (API error)" in credit_card_text(
         dataclasses.replace(estimate, credit_error_at=NOW), now=NOW).plain
+
+
+@pytest.mark.parametrize("since,now,start,end", [
+    ("2026-10-11T09:00:00Z", "2026-10-11T10:00:00Z", "2026-10-11T09:00:00+00:00", "2026-11-11T09:00:00+00:00"),
+    ("2026-10-11T09:00:00Z", "2026-11-11T09:00:00Z", "2026-11-11T09:00:00+00:00", "2026-12-11T09:00:00+00:00"),
+    ("2026-01-31", "2026-02-28", "2026-02-28T00:00:00+00:00", "2026-03-31T00:00:00+00:00"),
+    ("2028-01-31", "2028-02-29", "2028-02-29T00:00:00+00:00", "2028-03-31T00:00:00+00:00"),
+    ("2026-12-11", "2027-01-10", "2026-12-11T00:00:00+00:00", "2027-01-11T00:00:00+00:00"),
+])
+def test_monthly_claim_date_windows(since, now, start, end):
+    assert monthly_window(since, timestamp(now)) == (start, end)
+
+
+def test_monthly_estimates_reset_only_on_configured_claim_date(tmp_path):
+    snap, path = setup(tmp_path)
+    config_path = tmp_path / CONFIG_NAME
+    config = json.loads(config_path.read_text())
+    config["9"]["monthly_cycle"] = True
+    config_path.write_text(json.dumps(config))
+    append(path, message(), message("renewed", at="2026-11-11T09:30:00Z"))
+    monitor = CreditMonitor(tmp_path)
+    estimate = monitor.scan(snap, now=NOW)["9"]
+    assert estimate.requests == 1 and estimate.spent == pytest.approx(.047)
+    assert estimate.resets_at == "2026-11-11T09:00:00+00:00"
+    renewed = monitor.scan(snap, now=timestamp("2026-11-11T10:00:00Z"))["9"]
+    assert renewed.requests == 1 and renewed.spent == pytest.approx(.047)
+    assert renewed.since == "2026-11-11T09:00:00+00:00"
+    assert renewed.resets_at == "2026-12-11T09:00:00+00:00"
+
+
+@pytest.mark.parametrize("spent,pct", [(0, 0), (50, 25), (150, 75), (190, 95), (200, 100), (250, 100)])
+def test_credit_bar_reuses_usage_colours_and_aligned_endpoints(tmp_path, spent, pct):
+    from claude_swap.tui.widgets import account_card_text, credit_card_text, usage_bar
+
+    snap, path = setup(tmp_path)
+    estimate = dataclasses.replace(CreditMonitor(tmp_path).scan(snap, now=NOW)["9"],
+                                   spent=spent, resets_at="2026-11-11T09:00:00Z")
+    rendered = credit_card_text(estimate, now=NOW, width=140, label_width=5)
+    bar = rendered.split("\n")[1][4:]
+    expected = usage_bar("API  ", pct, None, 30)
+    prefix = bar[:len(expected)]
+    assert prefix.plain == expected.plain
+    assert prefix.spans == expected.spans  # the shared severity colours, not a new palette
+    assert "resets 30d 23h" in bar.plain and "(est.)" in bar.plain
+    parent = dataclasses.replace(snap.accounts[0], usage=UsageEntry(last_good={
+        "five_hour": {"pct": pct}, "scoped": [{"name": "Fable", "pct": pct}],
+    }))
+    parent_bar = account_card_text(parent, 140, now=NOW).plain.splitlines()[1]
+    assert parent_bar.index("━" if pct else "─") == rendered.plain.splitlines()[1].index("━" if pct else "─")
+    assert parent_bar.index("%") == rendered.plain.splitlines()[1].index("%")
 
 
 def test_cli_configuration_changes_only_observer_file(tmp_path, monkeypatch, capsys):
@@ -208,13 +258,17 @@ def test_cli_configuration_changes_only_observer_file(tmp_path, monkeypatch, cap
 
     monkeypatch.setattr(cli, "ClaudeAccountSwitcher", Switcher)
     monkeypatch.setattr("time.time", lambda: NOW)
-    cli._credits_command(["set", "9", "--group-with", "2", "--monthly-credit", "200"])
+    cli._credits_command(["set", "9", "--group-with", "2", "--monthly-credit", "200", "--monthly-cycle"])
     config = json.loads((tmp_path / CONFIG_NAME).read_text())
     assert config["9"]["since"] == START and config["9"]["source_identity"] == [snap.accounts[2].email, ""]
+    assert config["9"]["monthly_cycle"] is True
     assert roster.read_text() == "unchanged roster" and credential.read_text() == "unchanged credential"
     append(path, message())
     capsys.readouterr()
     cli._credits_command(["--json"])
     assert json.loads(capsys.readouterr().out)["9"]["requests"] == 1
+    cli._credits_command([])
+    rendered = capsys.readouterr().out
+    assert "API" in rendered and "─" in rendered and "%" in rendered and "resets" in rendered
     cli._credits_command(["unset", "9"])
     assert json.loads((tmp_path / CONFIG_NAME).read_text()) == {}

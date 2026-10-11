@@ -169,6 +169,7 @@ def account_card_text(
     threshold: float | None = None,
     now: float | None = None,
     palette: Palette = Palette.DARK,
+    label_width: int | None = None,
 ) -> Text:
     """The full account card: header line + per-window bar rows."""
     now = now if now is not None else time.time()
@@ -218,7 +219,7 @@ def account_card_text(
         return text
 
     stale = acc.usage.age_s is not None and acc.usage.age_s > STALE_OK_S
-    label_width = max(len(label) for label, _pct, _suffix, _full in rows)
+    label_width = max(label_width or 0, max(len(label) for label, _pct, _suffix, _full in rows))
     bar_width = max(12, min(30, width - 42 - label_width))
     # everything on a row except the suffix: indent, label, bar, " NNN%", gap
     row_overhead = 4 + label_width + 1 + bar_width + 5 + 2
@@ -310,9 +311,9 @@ def mini_account_text(
 
 def credit_card_text(
     estimate: CreditEstimate, *, now: float, palette: Palette = Palette.DARK,
-    active: bool = False, disabled: bool = False,
+    active: bool = False, disabled: bool = False, width: int = 80, label_width: int = 3,
 ) -> Text:
-    """Compact API row beneath its subscription, with estimates clearly labelled."""
+    """The existing usage-bar styling, aligned with the subscription's labels."""
     text = Text()
     text.append(f"{estimate.number:>2}  API credits", style=f"bold {palette.accent}")
     text.append(f" ({estimate.email})", style=palette.foreground)
@@ -320,13 +321,21 @@ def credit_card_text(
         text.append("   ● active", style=f"bold {palette.accent}")
     if disabled:
         text.append("   (disabled)", style=palette.muted)
+    bar_width = max(12, min(30, width - 42 - label_width))
+    suffix, suffix_full = _reset_parts({"resets_at": estimate.resets_at}, now)
+    row_overhead = 4 + label_width + 1 + bar_width + 5 + 2
+    if suffix_full and row_overhead + len(suffix_full) + len(" (est.)") <= width:
+        suffix = suffix_full
+    suffix = f"{suffix} (est.)" if suffix else "reset unknown"
+    text.append("\n    ")
+    text.append(usage_bar(f"{'API':<{label_width}}", estimate.pct, suffix, bar_width, palette=palette))
     text.append(f"\n    ${estimate.monthly_credit:,.2f}/mo", style=palette.muted)
-    text.append(f" · ~${estimate.spent:,.2f} used", style=palette.foreground)
+    text.append(f" · ~${estimate.spent:,.2f} used", style=palette.muted)
     if estimate.remaining is None:
         text.append(" · remaining unknown (incomplete logs or pricing)", style=palette.sev_warn)
     else:
-        text.append(f" · ~${estimate.remaining:,.2f} left", style=palette.foreground)
-    text.append("\n    ")
+        text.append(f" · ~${estimate.remaining:,.2f} left", style=palette.muted)
+    text.append(" · ")
     if estimate.exhausted:
         text.append("credit exhausted (API error) · ", style=palette.sev_crit)
     if estimate.requests:
@@ -336,7 +345,6 @@ def credit_card_text(
         text.append(f" · last used {age}", style=palette.muted)
     else:
         text.append("no API use logged", style=palette.muted)
-    text.append(f" · since {estimate.since[:10]}", style=palette.muted)
     return text
 
 
@@ -439,9 +447,11 @@ class AccountCard(Static):
         self._acc = acc
         self._threshold = threshold
         self._credit: CreditEstimate | None = None
+        self._label_width: int | None = None
 
-    def set_credit(self, credit: CreditEstimate | None) -> None:
+    def set_credit(self, credit: CreditEstimate | None, *, label_width: int | None = None) -> None:
         self._credit = credit
+        self._label_width = label_width
         self.refresh(layout=True)
 
     def set_account(self, acc: AccountSnapshot) -> None:
@@ -453,10 +463,11 @@ class AccountCard(Static):
             return credit_card_text(
                 self._credit, now=time.time(), palette=Palette.from_theme(self.app.current_theme),
                 active=self._acc.is_active, disabled=self._acc.disabled,
+                width=self.size.width or 80, label_width=self._label_width or 3,
             )
         return account_card_text(
             self._acc, self.size.width or 80, threshold=self._threshold,
-            palette=Palette.from_theme(self.app.current_theme),
+            palette=Palette.from_theme(self.app.current_theme), label_width=self._label_width,
         )
 
 
