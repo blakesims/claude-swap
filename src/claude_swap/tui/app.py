@@ -18,6 +18,7 @@ from textual.reactive import reactive
 from textual.worker import WorkerState
 
 from claude_swap import printer
+from claude_swap.api_credits import CreditEstimate, CreditMonitor
 from claude_swap.codex_usage import CodexUsage, fetch_codex_usage
 from claude_swap.models import AccountsSnapshot
 from claude_swap.snapshot_source import account_identity
@@ -51,6 +52,8 @@ class CswapApp(App):
     refresh_status: reactive[str] = reactive("")
     busy: reactive[bool] = reactive(False)
     codex_usage: reactive[CodexUsage] = reactive(CodexUsage(status="loading…"))
+    credit_estimates: reactive[dict[str, CreditEstimate]] = reactive(dict)
+    credit_status: reactive[str] = reactive("")
 
     def __init__(
         self,
@@ -73,6 +76,8 @@ class CswapApp(App):
         self._applied_generation = 0
         self._last_refresh_error = ""
         self._codex_refreshing = False
+        self._credits_refreshing = False
+        self._credit_monitor = CreditMonitor(switcher.backup_dir)
         # The auto-switch threshold, drawn as a tick on the status strip's
         # bars everywhere. Missing/invalid settings fall back to the default.
         try:
@@ -192,6 +197,8 @@ class CswapApp(App):
                 taken_at=max(current.taken_at, snap.taken_at),
             )
         self._update_refresh_status()
+        if isinstance(self.screen, WatchScreen) and not self.credit_estimates:
+            self.refresh_credits()
 
     def _update_refresh_status(self) -> None:
         parts: list[str] = []
@@ -224,6 +231,25 @@ class CswapApp(App):
         self._codex_refreshing = False
         self.codex_usage = usage
 
+    def refresh_credits(self) -> None:
+        if self._credits_refreshing or self.snapshot is None:
+            return
+        self._credits_refreshing = True
+        snap = self.snapshot
+        self.run_worker(
+            partial(self._fetch_credits_blocking, snap), thread=True,
+            group="credits", exit_on_error=False, name="api-credit-estimates",
+        )
+
+    def _fetch_credits_blocking(self, snap: AccountsSnapshot) -> None:
+        estimates = self._credit_monitor.scan(snap, now=time.time())
+        self.call_from_thread(self._apply_credit_estimates, estimates)
+
+    def _apply_credit_estimates(self, estimates: dict[str, CreditEstimate]) -> None:
+        self._credits_refreshing = False
+        self.credit_status = ""
+        self.credit_estimates = estimates
+
     def request_refresh(self, *, full: bool = False) -> None:
         if full:
             self._full_next = True
@@ -254,6 +280,9 @@ class CswapApp(App):
         elif event.worker.group == "codex":
             self._codex_refreshing = False
             self.codex_usage = CodexUsage(status="Codex usage unavailable")
+        elif event.worker.group == "credits":
+            self._credits_refreshing = False
+            self.credit_status = "API estimates unavailable. Check cswap credits."
         elif event.worker.group == "action":
             self.busy = False
             self.notify(f"Action failed: {event.worker.error}", severity="error")
@@ -418,6 +447,7 @@ class CswapApp(App):
         self.request_refresh(full=True)
         if isinstance(self.screen, WatchScreen):
             self.refresh_codex()
+            self.refresh_credits()
         self.notify("Refreshing usage…", timeout=2)
 
     def action_open_auto(self) -> None:

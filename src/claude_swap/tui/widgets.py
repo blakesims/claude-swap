@@ -15,6 +15,7 @@ from rich.text import Text
 from textual.widgets import ListItem, Static
 
 from claude_swap import pace
+from claude_swap.api_credits import CreditEstimate
 from claude_swap.codex_usage import CodexUsage
 from claude_swap.json_output import USAGE_API_KEY
 from claude_swap.models import AccountSnapshot
@@ -307,6 +308,38 @@ def mini_account_text(
     return text
 
 
+def credit_card_text(
+    estimate: CreditEstimate, *, now: float, palette: Palette = Palette.DARK,
+    active: bool = False, disabled: bool = False,
+) -> Text:
+    """Compact API row beneath its subscription, with estimates clearly labelled."""
+    text = Text()
+    text.append(f"{estimate.number:>2}  API credits", style=f"bold {palette.accent}")
+    text.append(f" ({estimate.email})", style=palette.foreground)
+    if active:
+        text.append("   ● active", style=f"bold {palette.accent}")
+    if disabled:
+        text.append("   (disabled)", style=palette.muted)
+    text.append(f"\n    ${estimate.monthly_credit:,.2f}/mo", style=palette.muted)
+    text.append(f" · ~${estimate.spent:,.2f} used", style=palette.foreground)
+    if estimate.remaining is None:
+        text.append(" · remaining unknown (incomplete logs or pricing)", style=palette.sev_warn)
+    else:
+        text.append(f" · ~${estimate.remaining:,.2f} left", style=palette.foreground)
+    text.append("\n    ")
+    if estimate.exhausted:
+        text.append("credit exhausted (API error) · ", style=palette.sev_crit)
+    if estimate.requests:
+        text.append(f"{estimate.requests} API requests", style=palette.muted)
+        age_s = max(0.0, now - estimate.last_used)
+        age = f"{data.format_duration(age_s)} ago" if age_s >= 60 else "just now"
+        text.append(f" · last used {age}", style=palette.muted)
+    else:
+        text.append("no API use logged", style=palette.muted)
+    text.append(f" · since {estimate.since[:10]}", style=palette.muted)
+    return text
+
+
 class CodexPanel(Static):
     """Read-only Codex limits below Claude accounts on the watch screen."""
 
@@ -405,12 +438,22 @@ class AccountCard(Static):
         super().__init__()
         self._acc = acc
         self._threshold = threshold
+        self._credit: CreditEstimate | None = None
+
+    def set_credit(self, credit: CreditEstimate | None) -> None:
+        self._credit = credit
+        self.refresh(layout=True)
 
     def set_account(self, acc: AccountSnapshot) -> None:
         self._acc = acc
         self.refresh(layout=True)
 
     def render(self) -> Text:
+        if self._credit is not None:
+            return credit_card_text(
+                self._credit, now=time.time(), palette=Palette.from_theme(self.app.current_theme),
+                active=self._acc.is_active, disabled=self._acc.disabled,
+            )
         return account_card_text(
             self._acc, self.size.width or 80, threshold=self._threshold,
             palette=Palette.from_theme(self.app.current_theme),

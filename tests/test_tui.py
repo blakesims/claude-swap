@@ -1133,6 +1133,46 @@ class TestWatchScreen:
             await settle(pilot)
             assert not any(call[0] == "switch_to" for call in fake_calls(app))
 
+    @pytest.mark.parametrize("target", ["6", "7", "8"])
+    async def test_credit_groups_keep_each_api_account_switchable(self, tmp_path, monkeypatch, target):
+        from claude_swap.api_credits import CreditEstimate
+        from claude_swap.tui.widgets import AccountCard, AccountItem
+        from textual.widgets import ListView
+
+        accounts = [make_account(n, active=(n == 3)) for n in [1, 2, 3, 6, 7, 8]]
+        estimates = {
+            str(api): CreditEstimate(str(api), str(parent), accounts[parent - 1].email,
+                                     200, "2026-10-11", spent=20, requests=5, last_used=1000,
+                                     source_identity=(next(a.email for a in accounts if a.number == str(api)), ""))
+            for parent, api in [(1, 6), (2, 7), (3, 8)]
+        }
+        monkeypatch.setattr("claude_swap.tui.app.CreditMonitor.scan", lambda *_args, **_kwargs: estimates)
+        fake = FakeSwitcher(accounts, tmp_path)
+        app = make_app(fake)
+        async with app.run_test(size=(120, 45)) as pilot:
+            await settle(pilot)
+            await pilot.press("w")
+            await settle(pilot)
+            items = list(app.screen.query(AccountItem))
+            assert [item.number for item in items] == ["1", "6", "2", "7", "3", "8"]
+            card = next(item for item in items if item.number == target).query_one(AccountCard).render().plain
+            assert "~$180.00 left" in card and "$200.00/mo" in card
+            assert "http-400" not in card
+            assert "monthly renewals are not tracked" in app.screen.query_one("#credit-note").render().plain
+            await pilot.press("s")
+            listview = app.screen.query_one("#accounts", ListView)
+            assert listview.index == 4  # active subscription 3 after grouping
+            # Navigate with real keys. Reordering must not change what Enter switches.
+            index = [item.number for item in items].index(target)
+            key = "down" if index > 4 else "up"
+            for _ in range(abs(index - 4)):
+                await pilot.press(key)
+            await pilot.press("enter")
+            await settle(pilot)
+            assert ("switch_to", target) in fake.calls
+            assert app.snapshot.active_number == target
+            assert {a.number for a in app.snapshot.accounts} == {"1", "2", "3", "6", "7", "8"}
+
     async def test_codex_updates_without_switching_accounts(self, tmp_path):
         from claude_swap.codex_usage import CodexUsage, CodexWindow
         from claude_swap.tui.widgets import CodexPanel

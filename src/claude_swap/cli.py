@@ -973,6 +973,81 @@ def _menubar_service(args) -> int:
     return 0
 
 
+def _credits_command(argv: list[str]) -> None:
+    """Configure/report display-only estimates without touching account metadata."""
+    import math
+    import time
+    from dataclasses import asdict
+    from datetime import datetime, timezone
+
+    from claude_swap.api_credits import (
+        CONFIG_NAME, CreditMonitor, identity, load_credit_accounts, timestamp,
+    )
+    from claude_swap.locking import FileLock
+
+    parser = argparse.ArgumentParser(
+        prog=f"{_prog_name()} credits",
+        description="Local API credit estimates, not verified billing balances.",
+        epilog="No automatic billing reset. Use set --since DATE to start a new tracking period.",
+    )
+    parser.add_argument("--json", action="store_true")
+    sub = parser.add_subparsers(dest="command")
+    configure = sub.add_parser("set", help="group an API account and set its assumed credit allowance")
+    configure.add_argument("account")
+    configure.add_argument("--group-with", required=True, metavar="ACCOUNT")
+    configure.add_argument("--monthly-credit", required=True, type=float, metavar="USD")
+    configure.add_argument("--since", help="ISO date/time to count from (default: account added)")
+    remove = sub.add_parser("unset", help="stop observing an account, leaving it managed")
+    remove.add_argument("account")
+    args = parser.parse_args(argv)
+    switcher = ClaudeAccountSwitcher()
+    try:
+        snap = switcher.accounts_snapshot(fetch=set())
+        if args.command:
+            number, _, _ = switcher.resolve_account(args.account)
+            with FileLock(switcher.backup_dir / "credit-accounts.lock"):
+                config = load_credit_accounts(switcher.backup_dir)
+                if args.command == "unset":
+                    config.pop(number, None)
+                else:
+                    parent_number, _, _ = switcher.resolve_account(args.group_with)
+                    if number == parent_number or parent_number in config or any(
+                        e["group_with"] == number for e in config.values()
+                    ):
+                        raise ValueError("credit groups must have distinct subscription and API accounts")
+                    if not math.isfinite(args.monthly_credit) or args.monthly_credit <= 0:
+                        raise ValueError("monthly credit must be a positive finite USD amount")
+                    accounts = {a.number: a for a in snap.accounts}
+                    acc, parent = accounts[number], accounts[parent_number]
+                    roster = switcher._get_sequence_data() or {}
+                    since = args.since or roster.get("accounts", {}).get(number, {}).get("added")
+                    since = since or datetime.now(timezone.utc).isoformat()
+                    if timestamp(since) > time.time():
+                        raise ValueError("tracking start must not be in the future")
+                    config[number] = {
+                        "group_with": parent_number,
+                        "source_identity": identity(acc),
+                        "group_identity": identity(parent),
+                        "monthly_credit": args.monthly_credit,
+                        "since": since,
+                    }
+                switcher._write_json(switcher.backup_dir / CONFIG_NAME, config)
+            print(f"Credit display {'configured' if args.command == 'set' else 'removed'} for account {number}. Switching unchanged.")
+            return
+        estimates = CreditMonitor(switcher.backup_dir).scan(snap, now=time.time())
+        if args.json:
+            print(json.dumps({n: {**asdict(e), "remaining": e.remaining, "exhausted": e.exhausted}
+                              for n, e in estimates.items()}, indent=2))
+        else:
+            from claude_swap.tui.widgets import credit_card_text
+            for estimate in estimates.values():
+                print(credit_card_text(estimate, now=time.time()).plain)
+            if not estimates:
+                print("No API credit estimates configured. Run cswap credits set --help.")
+    except (ClaudeSwitchError, OSError, ValueError, KeyError, TypeError) as exc:
+        parser.exit(1, f"Credit estimates unavailable: {exc}\n")
+
+
 def main() -> None:
     """Main entry point for the CLI."""
     force_utf8_output()
@@ -1017,6 +1092,9 @@ def main() -> None:
     if argv and argv[0] == "move":
         _move_command(argv[1:])
         return
+    if argv and argv[0] == "credits":
+        _credits_command(argv[1:])
+        return
 
     # Bare `cswap` in an interactive terminal opens the TUI dashboard (like
     # lazygit/k9s). TTY-gated on both ends so scripts and pipes keep getting
@@ -1057,6 +1135,7 @@ Commands:
   %(prog)s move <a> <slot>            assign an account to a slot (swaps if taken)
   %(prog)s auto                       auto-switch when nearing rate limits
   %(prog)s config [set KEY VALUE]     show or change settings (settings.json)
+  %(prog)s credits [set NUM ...]      local API spending and credit estimates
   %(prog)s unclaimed [--purge ID]     list or drop stashed credential entries
   %(prog)s export <path>              export accounts
   %(prog)s import <path>              import accounts

@@ -81,6 +81,16 @@ WatchScreen #accounts {
     max-height: 70%;
 }
 
+WatchScreen #accounts ListItem.credit-parent {
+    margin-bottom: 0;
+}
+
+#credit-note {
+    height: auto;
+    padding: 0 4;
+    color: $secondary;
+}
+
 #codex-panel {
     height: auto;
     padding: 1 4;

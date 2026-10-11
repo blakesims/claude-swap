@@ -25,8 +25,9 @@ from textual.binding import Binding
 from textual.screen import Screen
 from textual.widgets import Footer, ListView, Static
 
+from claude_swap.api_credits import grouped_accounts, valid_estimates
 from claude_swap.models import AccountsSnapshot
-from claude_swap.tui.widgets import AccountItem, AccountsPanel, CodexPanel, MenuItem
+from claude_swap.tui.widgets import AccountCard, AccountItem, AccountsPanel, CodexPanel, MenuItem
 
 if TYPE_CHECKING:
     from claude_swap.tui.app import CswapApp
@@ -356,15 +357,53 @@ class WatchScreen(AccountListScreen):
     def compose(self) -> ComposeResult:
         yield Static("", id="list-title")
         yield ListView(id="accounts")
+        yield Static("", id="credit-note")
         yield CodexPanel(id="codex-panel")
         yield Footer()
 
     def on_mount(self) -> None:
         self.app.refresh_codex()
         self.set_interval(60, self.app.refresh_codex)
+        self.app.refresh_credits()
+        self.set_interval(15, self.app.refresh_credits)
+        self.watch(self.app, "credit_estimates", self._on_credit_estimates)
+        self.watch(self.app, "credit_status", self._credit_note)
         self.watch(self.app, "refresh_status", self._on_refresh_status)
         self.query_one("#list-title", Static).update(self._title_text())
         super().on_mount()
+
+    async def _on_credit_estimates(self, _estimates) -> None:
+        await self._on_snapshot(self.app.snapshot)
+        self._credit_note()
+
+    def _credit_note(self, _status: str = "") -> None:
+        note = self.query_one("#credit-note", Static)
+        text = self.app.credit_status or (
+            "API amounts estimate local use since shown dates. Other usage and monthly renewals are not tracked."
+            if self.app.credit_estimates else ""
+        )
+        note.update(text)
+        note.display = bool(text)
+
+    async def _on_snapshot(self, snap: AccountsSnapshot | None) -> None:
+        if snap is None:
+            return
+        listview = self.query_one("#accounts", ListView)
+        items = list(listview.query(AccountItem))
+        index = listview.index
+        selected = items[index].number if index is not None and index < len(items) else None
+        estimates = valid_estimates(snap, self.app.credit_estimates)
+        ordered = grouped_accounts(snap, estimates)
+        await super()._on_snapshot(ordered)
+        if self._selecting and selected in self._numbers:
+            listview.index = self._numbers.index(selected)
+        parents = {e.group_with for e in estimates.values()}
+        for item in listview.query(AccountItem):
+            item.query_one(AccountCard).set_credit(estimates.get(item.number))
+            item.set_class(item.number in parents, "credit-parent")
+
+    def _active_index(self, snap: AccountsSnapshot) -> int:
+        return super()._active_index(grouped_accounts(snap, self.app.credit_estimates))
 
     def _title_text(self) -> str:
         if self._selecting:
